@@ -1,0 +1,121 @@
+# ==================================================
+# MikroTik Onboarding Script for Billyetu
+# ==================================================
+# This script configures a MikroTik router for use with Billyetu
+#
+# Required variables:
+# - name: Router name (e.g., "Branch-1")
+# - radius_ip: IP of the RADIUS server (Billyetu)
+# - radius_secret: Shared secret for RADIUS
+# - trusted_ip: IP address allowed to access management
+# - api_username: Username for API access
+# - api_password: Password for API access
+# - vpn_server: (Optional) VPN server address
+# - vpn_user: (Optional) VPN username
+# - vpn_pass: (Optional) VPN password
+# - sync_url: (Optional) URL for user sync
+# ==================================================
+
+# Update system packages (optional)
+:put "Updating system packages..."
+/system package update set channel=long-term
+
+# Configure system identity
+:put "Setting system identity..."
+/system identity set name="$name"
+
+# =======================
+# Network Configuration
+# =======================
+:put "Configuring network settings..."
+
+# Configure DNS
+/ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=yes
+
+# Configure NTP
+/system ntp client set enabled=yes primary-ntp=pool.ntp.org
+
+# =======================
+# VPN Configuration (Optional)
+# =======================
+:if ([:len "$vpn_server"] > 0) do={
+    :put "Configuring VPN..."
+    /interface ovpn-client add name=ovpn-out1 connect-to=$vpn_server port=1194 mode=ip user=$vpn_user password=$vpn_pass profile=default-encryption disabled=no
+    /ip firewall nat add chain=srcnat out-interface=ovpn-out1 action=masquerade
+}
+
+# =======================
+# RADIUS Authentication
+# =======================
+:put "Configuring RADIUS authentication..."
+
+# Remove any existing RADIUS servers
+/radius remove [find]
+
+# Add RADIUS server for Hotspot, PPP and Login
+/radius add service=hotspot,login,ppp address=$radius_ip secret=$radius_secret timeout=5s
+
+# Enable RADIUS for Hotspot
+/ip hotspot set [find name=hotspot1] use-radius=yes
+
+# =======================
+# Firewall Configuration
+# =======================
+:put "Configuring firewall..."
+
+# Allow API access (port 8728 for RouterOS API)
+/ip firewall filter add chain=input protocol=tcp dst-port=8728 comment="Allow API Access"
+
+# Allow RADIUS authentication (ports 1812/1813)
+/ip firewall filter add chain=input protocol=udp dst-port=1812-1813 comment="Allow RADIUS"
+
+# Allow ICMP (ping)
+/ip firewall filter add chain=input protocol=icmp comment="Allow ICMP"
+
+# =======================
+# API Access
+# =======================
+:put "Configuring API access..."
+
+# Enable API service
+/ip service set api disabled=no
+/ip service set api port=8728
+
+# Add API user with full access
+:if ([:len [find where name=$api_username]] = 0) do={
+    /user add name=$api_username password=$api_password group=full
+}
+
+# Restrict management access to trusted IP
+/ip service set api address=$trusted_ip/32
+/ip service set winbox address=$trusted_ip/32
+/ip service set ssh address=$trusted_ip/32
+
+# =======================
+# User Synchronization (Optional)
+# =======================
+:if ([:len "$sync_url"] > 0) do={
+    :put "Configuring user synchronization..."
+    /system scheduler remove [find name="sync_users"]
+    /system scheduler add name="sync_users" interval=5m on-event="/tool fetch url=$sync_url"
+}
+
+# =======================
+# Finalization
+# =======================
+:put ""
+:put "=================================="
+:put "MikroTik Configuration Complete!"
+:put "Router Name: $name"
+:put "RADIUS Server: $radius_ip"
+:put "API Access: Enabled on port 8728"
+:put "Management Access: Restricted to $trusted_ip"
+:if ([:len "$vpn_server"] > 0) do={ :put "VPN: Configured to $vpn_server" }
+:put "=================================="
+:put ""
+
+# Print current IP addresses for reference
+:put "Current IP Addresses:"
+/ip address print
+
+:put "\nOnboarding complete. The router is now ready to use with Billyetu."
