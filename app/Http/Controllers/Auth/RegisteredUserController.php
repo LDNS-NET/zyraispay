@@ -6,9 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\Tenant;
 use Illuminate\Auth\Events\Registered;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules;
 use Inertia\Inertia;
@@ -30,8 +28,6 @@ class RegisteredUserController extends Controller
 
     /**
      * Handle an incoming registration request.
-     *
-     * @throws \Illuminate\Validation\ValidationException
      */
     public function store(Request $request)
     {
@@ -44,49 +40,64 @@ class RegisteredUserController extends Controller
         ]);
 
         DB::beginTransaction();
+
         try {
-            // Generate subdomain from business name
-            $baseSubdomain = strtolower(preg_replace('/[^a-z0-9]+/', '-', $request->business_name));
-            $subdomain = $baseSubdomain;
-            $i = 1;
-            while (Tenant::query()->whereHas('domains', function($q) use ($subdomain) {
-                $q->where('domain', $subdomain . '.yourapp.com');
-            })->exists()) {
-                $subdomain = $baseSubdomain . '-' . $i;
-                $i++;
-            }
+            // Generate clean subdomain from business name
+$baseSubdomain = strtolower($request->business_name);
+$baseSubdomain = preg_replace('/[^a-z0-9]+/', '-', $baseSubdomain); // replace invalid chars
+$baseSubdomain = trim($baseSubdomain, '-'); // remove leading/trailing dashes
+$baseSubdomain = preg_replace('/-+/', '-', $baseSubdomain); // collapse multiple dashes
+
+// Ensure subdomain starts with a letter
+if (!preg_match('/^[a-z]/', $baseSubdomain)) {
+    $baseSubdomain = 'biz-' . $baseSubdomain;
+}
+
+// Limit to 30 chars (DNS label limit)
+$baseSubdomain = substr($baseSubdomain, 0, 30);
+
+$subdomain = $baseSubdomain;
+$i = 1;
+
+// Ensure uniqueness
+while (Tenant::query()->whereHas('domains', function ($q) use ($subdomain) {
+    $q->where('domain', $subdomain . '.zyraispay.zyraaf.cloud');
+})->exists()) {
+    $subdomain = $baseSubdomain . '-' . $i;
+    $i++;
+}
+
 
             // --- IntaSend wallet creation ---
             $walletId = null;
-            $response = null;
             try {
-                $credentials = [
+                $wallet = new Wallet();
+                $wallet->init([
                     'token' => env('INTASEND_SECRET_KEY'),
                     'publishable_key' => env('INTASEND_PUBLIC_KEY'),
                     'test' => env('APP_ENV') !== 'production',
-                ];
-                $wallet = new Wallet();
-                $wallet->init($credentials);
+                ]);
+
                 $response = $wallet->create('KES', $subdomain, true);
                 $walletId = $response->wallet_id ?? null;
             } catch (\Exception $e) {
-                \Log::error('Failed to create IntaSend wallet for tenant', ['subdomain' => $subdomain, 'error' => $e->getMessage()]);
+                Log::error('Failed to create IntaSend wallet for tenant', [
+                    'subdomain' => $subdomain,
+                    'error' => $e->getMessage()
+                ]);
             }
-            \Log::info('Wallet creation result', ['walletId' => $walletId, 'response' => $response ?? null]);
-            // --- End IntaSend wallet creation ---
 
-            // Fallback for local/test environment if wallet creation fails
             if (!$walletId) {
                 if (app()->environment(['local', 'testing'])) {
                     $walletId = 'DUMMY-' . uniqid();
-                    \Log::warning('Using dummy wallet ID for tenant in local/test environment.', ['wallet_id' => $walletId]);
+                    Log::warning('Using dummy wallet ID for tenant.', ['wallet_id' => $walletId]);
                 } else {
                     DB::rollBack();
-                    return back()->withErrors(['wallet' => 'Failed to create IntaSend wallet. Please try again or contact support.']);
+                    return back()->withErrors(['wallet' => 'Failed to create wallet. Try again later.']);
                 }
             }
 
-            // 1. Create the tenant with wallet_id
+            // Create tenant
             $tenant = Tenant::create([
                 'id' => (string) Str::uuid(),
                 'business_name' => $request->business_name,
@@ -94,15 +105,14 @@ class RegisteredUserController extends Controller
                 'email' => $request->email,
                 'phone' => $request->phone,
                 'wallet_id' => $walletId,
-                // ...existing code...
             ]);
 
-            // 2. Assign a domain/subdomain
+            // Assign tenant domain
             $tenant->domains()->create([
-                'domain' => $subdomain . '.billyetu-production.up.railway.app',
+                'domain' => $subdomain . '.zyraispay.zyraaf.cloud',
             ]);
 
-            // 3. Create a tenant admin user in the tenant's DB
+            // Create admin user inside tenant DB
             $tenant->run(function () use ($request) {
                 User::create([
                     'name' => $request->username,
@@ -116,13 +126,15 @@ class RegisteredUserController extends Controller
             });
 
             DB::commit();
+
+            // Redirect to tenant dashboard (on the subdomain)
+            $tenantUrl = 'https://' . $subdomain . '.zyraispay.zyraaf.cloud/dashboard';
+            return Inertia::location($tenantUrl);
+
         } catch (\Exception $e) {
             DB::rollBack();
-            throw $e;
+            Log::error('Tenant registration failed', ['error' => $e->getMessage()]);
+            return back()->withErrors(['register' => 'Registration failed. Please try again.']);
         }
-
-        // 4. Redirect to tenant's subdomain dashboard
-        // return \Inertia\Inertia::location('https://' . $subdomain . '.billyetu-production.up.railway.app/dashboard'); // Uncomment for production subdomain redirect
-        return redirect()->route('dashboard');
     }
 }

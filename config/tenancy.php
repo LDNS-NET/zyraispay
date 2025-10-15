@@ -3,13 +3,13 @@
 declare(strict_types=1);
 
 use Stancl\Tenancy\Database\Models\Domain;
-//use Stancl\Tenancy\Database\Models\Tenant;
-use App\Models\Tenant; 
+use Stancl\Tenancy\Database\Models\Tenant;
 
 return [
-    'tenant_model' => Tenant::class, // <- use your custom model
+    'tenant_model' => Tenant::class,
     'id_generator' => Stancl\Tenancy\UUIDGenerator::class,
-    'domain_model' => Stancl\Tenancy\Database\Models\Domain::class,
+
+    'domain_model' => Domain::class,
 
     /**
      * The list of domains hosting your central app.
@@ -17,9 +17,13 @@ return [
      * Only relevant if you're using the domain or subdomain identification middleware.
      */
     'central_domains' => [
-        '127.0.0.1',
-        'localhost',
-    ],
+    '127.0.0.1',
+    'localhost',
+    'zyraaf.cloud',
+    'www.zyraaf.cloud',
+    'zyraispay.zyraaf.cloud',
+],
+
 
     /**
      * Tenancy bootstrappers are executed when tenancy is initialized.
